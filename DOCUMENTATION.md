@@ -397,3 +397,56 @@ cd frontend
 npm run build
 npm run start
 ```
+
+---
+
+## 10. Portable Hardware Implementation & Sensor Architecture
+
+### A. Bill of Materials (BOM) & Component Selection
+
+| Component Category | Hardware Module | Operating Voltage | Interface / Signal | Function |
+| :--- | :--- | :--- | :--- | :--- |
+| **Microcontroller (MCU)** | ESP32-S3-WROOM-1 | 3.3V DC | Wi-Fi / BLE 5.0 / I2C / ADC | Main controller, ADC sampling, digital filtering, HTTP/BLE transmission |
+| **ECG Sensor** | AD8232 Single-Lead Monitor | 3.3V DC | Analog Output (ADC pin) | Lead-I ECG waveform extraction (RA, LA, RL electrode pads) |
+| **PPG Sensor** | MAX30102 / MAX30101 | 1.8V / 3.3V | I2C (SCL/SDA, 400kHz) | Optical PPG pulse absorption (Red & Infrared LED pair) |
+| **Respiration Sensor** | Piezoresistive Respiration Belt / Strain Gauge | 3.3V DC | Analog ADC (Bridge Amplifier) | Chest expansion chest belt voltage variation |
+| **Power Management** | 3.7V 1200mAh LiPo + TP4056 + AP2112K-3.3 | 3.7V → 3.3V | LDO Power Regulation | Portable battery power, USB-C recharging |
+
+### B. Pin Mapping & Interconnection Diagram
+
+```
+                 ESP32-S3 Microcontroller
+              ┌───────────────────────────┐
+              │                           │
+  AD8232 ECG  │ GPIO 34 (ADC1_CH3) <──────┤ Analog OUT (ECG signal)
+  Single-Lead │ GPIO 18            <──────┤ SDN (Shutdown control)
+              │ GPIO 19            <──────┤ LO+ (Lead-off detect +)
+              │ GPIO 21            <──────┤ LO- (Lead-off detect -)
+              │                           │
+  MAX30102    │ GPIO 21 (SDA)      <──────┤ I2C Data
+  PPG Sensor  │ GPIO 22 (SCL)      <──────┤ I2C Clock
+              │ GPIO 4             <──────┤ INT (Interrupt)
+              │                           │
+  Respiration │ GPIO 35 (ADC1_CH4) <──────┤ Stretch Belt Signal Output
+              │                           │
+  LiPo Power  │ 3V3 / GND          <──────┤ AP2112K LDO 3.3V Regulated Output
+              └───────────────────────────┘
+```
+
+### C. On-Device Firmware & Feature Extraction Pipeline
+
+1. **High-Frequency ADC & Digital Filtering**:
+   - **ECG (256 Hz)**: Processed via a 4th-order Bandpass Butterworth filter (0.5 Hz – 40 Hz) + 50/60 Hz Notch filter to eliminate powerline interference.
+   - **PPG (64 Hz)**: Filtered with a 2nd-order Bandpass filter (0.5 Hz – 5.0 Hz).
+   - **Respiration (32 Hz)**: Low-pass filtered at 1.0 Hz to isolate breathing cycles.
+
+2. **60-Second Sliding Window Feature Vector Engine**:
+   - Calculates time-domain HRV metrics: `mean_hr`, `mean_rr`, `sdnn`, `rmssd`, `pnn50`, `cvnn`.
+   - Calculates frequency-domain metrics: `lf_power`, `hf_power`, `lf_hf_ratio`.
+   - Computes signal non-linear complexity: `baevsky_index`, Hjorth parameters (`mobility`, `complexity`).
+
+3. **Deployment Options (Edge Transmission vs TinyML)**:
+   - **Option 1 (HTTP/JSON Streaming)**: MCU connects to local Wi-Fi and sends the 85-feature vector directly to `POST http://<SERVER-IP>:8000/predict`.
+   - **Option 2 (BLE Peripheral)**: MCU broadcasts as a GATT server, streaming 60s window inferences to the Next.js frontend or a mobile app.
+   - **Option 3 (TinyML On-Device Inference)**: Export trained XGBoost decision trees into standalone `C` code using `m2cgen`, executing inference directly on ESP32-S3 RAM in <5ms without requiring network connectivity.
+
